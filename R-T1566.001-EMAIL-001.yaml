@@ -1,0 +1,84 @@
+# Grounded in email-t06: IT-authority display name over a consumer mailbox; body
+# instructs scanning an attached QR code with a mobile device to "verify identity" --
+# a deliberate channel shift off the monitored corporate network/browser onto an
+# unmanaged personal device, with a pretextual justification for why the destination
+# is unreachable by normal means. Real cold-agent confidence 0.82.
+rule_id: R-T1566.001-EMAIL-001
+version: 1
+technique_id: T1566.001
+tactic: initial-access
+hypothesis_label: "QR-code attachment redirecting credential entry to an unmanaged device/channel"
+status: candidate
+severity_ceiling: 8
+base_confidence: 0.35
+calibration: { method: untuned }
+
+same_entity: [message_id]
+
+required_signatures:
+  - sig_id: s1
+    sensor: email
+    match: { attachment_type: qr_code_image }
+    independence_group: g_channel_shift
+  - sig_id: s2
+    sensor: email
+    match: { body_instructs_mobile_scan: true, body_provides_channel_shift_rationale: true }
+    independence_group: g_lure_construction
+
+disconfirming_signatures:
+  - sig_id: d1
+    source: context_store
+    match: { asset_ou_in: [SecurityTeam, RedTeam, PentestLab] }
+    effect: suppress
+    rationale: "Sanctioned phishing-simulation sender."
+  - sig_id: d2
+    source: email
+    match: { sender_domain_is_legitimate_mfa_or_identity_vendor: true }
+    effect: penalize
+    confidence_penalty: 0.20
+    rationale: "Legitimate MFA/identity-verification vendors do occasionally use QR-based enrollment flows -- a genuine benign pattern this signature alone cannot rule out."
+
+required_qualifiers:
+  - qualifier_id: q1
+    question: "Does the QR code decode to a credential-harvesting URL, or a legitimate vendor domain?"
+    resolve_via: email.click_telemetry
+    refutes_if: "the decoded URL resolves to a known-legitimate identity vendor"
+  - qualifier_id: q2
+    question: "Does the sending mailbox have any organizational relationship to the recipient's IT/security function?"
+    resolve_via: context_store
+    weakens_if: "the sender is a verified internal IT/security account"
+
+chain_role: entry
+# The channel shift IS the point of this lure: the QR code moves credential entry onto an
+# unmanaged mobile device, so the compromise lands on the identity plane, not on a
+# corporate endpoint. `execution` is deliberately NOT declared downstream here -- nothing
+# runs on a monitored host in this chain, and declaring it would send the planner looking
+# for a hop this specific technique does not produce.
+expects_downstream:
+  - tactic: credential-access
+    within: PT4H
+  - tactic: persistence
+    within: PT24H
+references:
+  - https://attack.mitre.org/techniques/T1566/001/
+owner: email-detection-eng
+
+# 2026-08-08: recursive_logic added, same bounded-follow-up discipline as
+# rule_engine/rules/R-T1566-T1059-001.yaml (the other entry-role phishing rule).
+recursive_logic:
+  enabled: true
+  spawn_on: auto
+  max_depth: 1
+  max_spawned_investigations: 2
+  rationale: >
+    A confirmed quishing lure is only interesting if the channel shift actually worked, and
+    that is a question about the identity plane rather than the endpoint: did credentials
+    get entered on the attacker's page (credential-access, within a few hours of delivery
+    while the "verify identity" urgency pretext is still live), and did whoever collected
+    them then plant their own foothold on the account -- an attacker-registered MFA method
+    or a mailbox forwarding rule (persistence, within a day, since an operator picks up
+    harvested credentials on their own schedule, not the victim's). chain_role=entry so
+    spawn_on=auto resolves to downstream-only (nothing meaningful precedes the delivery of
+    the phish itself -- see recursive_planner/planner.py's _auto_direction()). Bounded to
+    depth 1 and exactly the 2 real declared candidates, no dead headroom, so this cannot
+    become the unbounded per-alert loop specs/07 §9 rejected.
